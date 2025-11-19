@@ -9,7 +9,9 @@ import (
 )
 
 func main() {
-	tb := limiter.NewTokenBucket(10, 5, time.Second)
+	// tb := limiter.NewTokenBucket(10, 5, time.Second)
+	// tb := limiter.NewLeakyBucket(10, 5)
+	tb := limiter.NewSlidingWindowCounter(10, time.Second)
 	var wg sync.WaitGroup
 
 	totalRequests := 20
@@ -28,5 +30,5 @@ func main() {
 	}
 
 	wg.Wait()
-	tb.Stop()
+
 }

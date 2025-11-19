@@ -3,7 +3,7 @@
 # Variables
 BINARY_NAME=rate-limiter
 BUILD_DIR=./bin
-CMD_DIR=./cmd/main.go
+CMD_DIR=./cmd/server/main.go
 
 # Default target
 all: fmt lint test build
