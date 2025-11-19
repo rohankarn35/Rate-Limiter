@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rate-limiter
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: rate-limiter
+  template:
+    metadata:
+      labels:
+        app: rate-limiter
+    spec:
+      containers:
+        - name: limiter
+          image: ghcr.io/rohankarn35/rate-limiter:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - /rate-limiter
+          env:
+            - name: CONFIG_PATH
+              value: /config/config.yaml
+          ports:
+            - containerPort: 8080
+            - containerPort: 9093
+          volumeMounts:
+            - name: config
+              mountPath: /config
+      volumes:
+        - name: config
+          configMap:
+            name: rate-limiter-config

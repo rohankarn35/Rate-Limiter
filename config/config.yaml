@@ -1,0 +1,44 @@
+server:
+  address: ":8080"
+  grpc_address: ":9093"
+  read_timeout: 5s
+  write_timeout: 10s
+  idle_timeout: 60s
+
+metrics:
+  enabled: true
+  path: /metrics
+
+storage:
+  driver: memory
+  redis:
+    address: "redis:6379"
+    username: ""
+    password: ""
+    db: 0
+
+policies:
+  - name: public-ip
+    routes:
+      - /api/v1/*
+    methods: ["GET", "POST"]
+    identity:
+      type: ip
+    algorithm:
+      type: token_bucket
+      limit: 30
+      burst: 30
+      refill_rate: 5
+      interval: 1s
+  - name: api-key-tier
+    routes:
+      - /api/v1/premium/*
+    methods: ["GET", "POST"]
+    identity:
+      type: header
+      key: X-API-Key
+      fallback: ip
+    algorithm:
+      type: sliding_window
+      limit: 100
+      window: 1m

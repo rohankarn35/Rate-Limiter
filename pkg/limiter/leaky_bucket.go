@@ -1,62 +1,87 @@
 package limiter
 
 import (
-	"sync"
+	"context"
+	"math"
 	"time"
+
+	"github.com/rohankarn35/rate_limiter_golang/pkg/storage"
 )
 
-// LeakyBucket implements the leaky bucket algorithm as a meter.
-// It allows requests if the "water level" in the bucket is below the capacity.
-// Water leaks at a constant rate.
-type LeakyBucket struct {
-	capacity     float64
-	remaining    float64 // Current water level (inverse of remaining space, but let's track 'water')
-	leakRate     float64 // Leaks per second
-	lastLeakTime time.Time
-	mutex        sync.Mutex
+type leakyBucketState struct {
+	WaterLevel float64   `json:"water_level"`
+	LastLeak   time.Time `json:"last_leak"`
 }
 
-// NewLeakyBucket creates a new LeakyBucket.
-// capacity: maximum burst size.
-// leakRate: requests per second that leak out of the bucket.
-func NewLeakyBucket(capacity int, leakRate float64) *LeakyBucket {
-	return &LeakyBucket{
-		capacity:     float64(capacity),
-		remaining:    0, // Start empty (0 water)
-		leakRate:     leakRate,
-		lastLeakTime: time.Now(),
+// LeakyBucketLimiter enforces the leaky bucket algorithm.
+type LeakyBucketLimiter struct {
+	store     storage.Storage
+	capacity  float64
+	leakRate  float64
+	keyPrefix string
+	ttl       time.Duration
+	now       func() time.Time
+}
+
+// NewLeakyBucketLimiter returns a limiter that leaks requests over time.
+func NewLeakyBucketLimiter(store storage.Storage, capacity int, leakRate float64, keyPrefix string) *LeakyBucketLimiter {
+	return &LeakyBucketLimiter{
+		store:     store,
+		capacity:  float64(capacity),
+		leakRate:  leakRate,
+		keyPrefix: keyPrefix,
+		ttl:       defaultStateTTL,
+		now:       time.Now,
 	}
 }
 
-// Allow checks if a request is allowed.
-// It lazily updates the bucket state based on the time elapsed.
-func (lb *LeakyBucket) Allow() bool {
-	lb.mutex.Lock()
-	defer lb.mutex.Unlock()
-
-	now := time.Now()
-	elapsed := now.Sub(lb.lastLeakTime).Seconds()
-
-	// Calculate leak
-	leak := elapsed * lb.leakRate
-	if leak > 0 {
-		lb.remaining -= leak
-		if lb.remaining < 0 {
-			lb.remaining = 0
-		}
-		lb.lastLeakTime = now
+// Allow enforces the leaky bucket rules per key.
+func (lb *LeakyBucketLimiter) Allow(ctx context.Context, key string) (Result, error) {
+	stateKey := lb.stateKey(key)
+	state := leakyBucketState{
+		LastLeak: lb.now(),
+	}
+	loaded, err := loadState(ctx, lb.store, stateKey, &state)
+	if err != nil {
+		return Result{}, err
+	}
+	if !loaded {
+		state.LastLeak = lb.now()
 	}
 
-	// Check if we can add a request (water)
-	if lb.remaining+1 <= lb.capacity {
-		lb.remaining++
-		return true
+	now := lb.now()
+	elapsed := now.Sub(state.LastLeak).Seconds()
+	if elapsed > 0 {
+		leaked := elapsed * lb.leakRate
+		state.WaterLevel = math.Max(0, state.WaterLevel-leaked)
+		state.LastLeak = now
 	}
 
-	return false
+	result := Result{
+		Limit: int(lb.capacity),
+	}
+
+	if state.WaterLevel+1 <= lb.capacity {
+		state.WaterLevel++
+		result.Allowed = true
+	} else {
+		result.Allowed = false
+		result.RetryAfter = time.Duration(math.Ceil((state.WaterLevel+1-lb.capacity)/lb.leakRate)) * time.Second
+		result.ResetAfter = result.RetryAfter
+	}
+
+	result.Remaining = int(math.Max(0, lb.capacity-state.WaterLevel))
+
+	if err := saveState(ctx, lb.store, stateKey, &state, lb.ttl); err != nil {
+		return Result{}, err
+	}
+
+	return result, nil
 }
 
-// Stop is a no-op for the lazy implementation but kept for interface compatibility if needed.
-func (lb *LeakyBucket) Stop() {
-	// No background routines to stop
+func (lb *LeakyBucketLimiter) stateKey(key string) string {
+	if lb.keyPrefix == "" {
+		return key
+	}
+	return lb.keyPrefix + ":" + key
 }

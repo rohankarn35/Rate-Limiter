@@ -1,104 +1,123 @@
-# 🚦 Token Bucket Rate Limiter in Go
+# 🚦 Distributed Rate Limiter in Go
 
-This project is a **high-concurrency rate limiter** implemented in Go using the **Token Bucket design pattern**. It demonstrates safe request throttling with goroutines, mutexes, and channels.
-
----
-
-## 🧠 Theory
-
-**Rate Limiting** controls how often an action can occur in a given timeframe, helping protect APIs from abuse and overload.
-
-**Token Bucket Pattern**:
-
-- A bucket holds tokens.
-- Tokens refill at a fixed rate.
-- Each request consumes one token.
-- If no tokens are available, the request is denied or delayed.
+Version 2 turns the simple demo into a **production-ready, multi-algorithm rate limiter** that can be embedded into HTTP and gRPC services, deployed with Docker/Kubernetes, and monitored with Prometheus.
 
 ---
 
-## 📁 Current Project Structure
+## ✨ Highlights
+
+- **Config-driven policies** – declare routes, methods, identities (IP/header/query), and limits in `config/config.yaml`.
+- **Multiple algorithms** – Token Bucket, Leaky Bucket, and Sliding Window backed by shared storage.
+- **Per-IP / per-API key controls** – key extractors support IP fallback, arbitrary headers, or query params.
+- **Pluggable storage** – in-memory engine for local testing and Redis adapter for distributed deployments.
+- **HTTP & gRPC middleware** – attach the limiter manager to REST handlers or unary RPC interceptors.
+- **Observability** – Prometheus counters exposed at `/metrics`, ready for scraping.
+- **Batteries included ops** – Dockerfile, docker-compose stack (with Redis), and Kubernetes manifests.
+
+---
+
+## 📁 Project Layout
 
 ```
 .
-├── cmd
-│   └── main.go
-├── go.mod
-├── internal
-│   └── middleware
-│       └── http.go
-├── LICENSE
-├── Makefile
-├── pkg
-│   └── limiter
-│       ├── leaky_bucket.go
-│       ├── limiter.go
-│       └── token_bucket.go
-├── README.md
-└── tests
-    ├── benchmark_test.go
-    ├── concurrency_test.go
-    └── limiter_test.go
-```
-
----
-
-## ⚡ Current Features
-
-- **Token Bucket** and **Leaky Bucket** implementations
-- Thread-safe with `sync.Mutex`
-- Middleware-ready for HTTP
-- Unit tests and benchmarks
-- Modular Go project structure
-
----
-
-## 🛠️ Setup
-
-```bash
-go mod tidy
-go run ./cmd/main.go
-```
-
----
-
-## 🔮 Upcoming Advancements (Version 2)
-
-We are evolving this into a **production-grade** rate limiter:
-
-- **Per-IP** and **Per-API key** limiting
-- Multiple algorithms: Token Bucket, Leaky Bucket, Sliding Window
-- In-memory + Redis-backed storage for distributed deployments
-- HTTP & gRPC middleware
-- Configurable tiers per route or plan
-- Prometheus metrics for monitoring
-- Dockerized for easy deployment
-- CI/CD with GitHub Actions
-
-**Future Structure:**
-
-```
-.
-├── cmd/server/
-├── config/
-├── deployments/
-├── internal/api/
-├── internal/server/
-├── pkg/limiter/
-├── pkg/storage/
-├── test/
-├── .github/workflows/
-├── go.mod
-├── LICENSE
-├── Makefile
+├── cmd/server               # Application entrypoint
+├── config/                  # Sample configuration
+├── deployments/             # Docker + Kubernetes assets
+├── internal/
+│   ├── api/middleware       # HTTP & gRPC middlewares
+│   └── server               # HTTP/gRPC bootstrapping + metrics
+├── pkg/
+│   ├── config               # YAML loader & duration helpers
+│   ├── limiter              # Algorithms, manager, policy builder
+│   └── storage              # Memory & Redis backends
+├── test/                    # Unit + benchmark suites
 └── README.md
 ```
 
 ---
 
+## ⚙️ Configuration
+
+Policies live in `config/config.yaml` (see file for full example):
+
+```yaml
+server:
+  address: ":8080"
+  grpc_address: ":9090"
+storage:
+  driver: redis
+  redis:
+    address: "redis:6379"
+policies:
+  - name: public-ip
+    routes: ["/api/v1/*"]
+    methods: ["GET", "POST"]
+    identity:
+      type: ip
+    algorithm:
+      type: token_bucket
+      limit: 30
+      burst: 30
+      refill_rate: 5
+      interval: 1s
+  - name: api-key-tier
+    routes: ["/api/v1/premium/*"]
+    methods: ["GET", "POST"]
+    identity:
+      type: header
+      key: X-API-Key
+      fallback: ip
+    algorithm:
+      type: sliding_window
+      limit: 100
+      window: 1m
+```
+
+Override the config path with `CONFIG_PATH=/path/to/config.yaml`.
+
+---
+
+## 🚀 Getting Started
+
+```bash
+# Run locally (memory storage)
+go run ./cmd/server
+
+# Run tests & benchmarks
+go test ./...
+go test -bench=. -benchmem ./test
+
+# Docker (includes Redis via docker-compose)
+docker compose -f deployments/docker-compose.yaml up --build
+```
+
+Once running:
+
+- REST API demo: `curl http://localhost:8080/api/v1/payments`
+- Metrics: `curl http://localhost:8080/metrics`
+- gRPC health check: `grpcurl localhost:9090 grpc.health.v1.Health/Check`
+
+---
+
+## 📦 Deployments
+
+- **Dockerfile** – multi-stage build producing a distroless image.
+- **docker-compose** – spins up the limiter + Redis for local integration tests.
+- **Kubernetes manifests** – Deployment, Service, and ConfigMap under `deployments/k8s/`.
+
+---
+
+## 🧪 Tests
+
+- Algorithm unit tests verify each limiter with shared storage.
+- Concurrency tests ensure thread safety under high contention.
+- Benchmarks (`test/benchmark_test.go`) help gauge algorithm throughput.
+
+---
+
 ## 📄 License
 
-Apache License 2.0
+Apache License 2.0 – see `LICENSE`.
 
 ---
 

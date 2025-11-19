@@ -1,77 +1,108 @@
 package limiter
 
 import (
-	"sync"
+	"context"
+	"math"
 	"time"
+
+	"github.com/rohankarn35/rate_limiter_golang/pkg/storage"
 )
 
-// SlidingWindowCounter implements the Sliding Window Counter algorithm.
-// It approximates the request count in a rolling window using a weighted average
-// of the previous window's count and the current window's count.
-type SlidingWindowCounter struct {
-	limit           int           // Max requests per window
-	windowSize      time.Duration // Size of the window
-	currWindowStart time.Time     // Start time of the current window
-	prevCount       int           // Count in the previous window
-	currCount       int           // Count in the current window
-	mutex           sync.Mutex
+type slidingWindowState struct {
+	PrevCount       int       `json:"prev_count"`
+	CurrCount       int       `json:"curr_count"`
+	CurrWindowStart time.Time `json:"curr_window_start"`
 }
 
-// NewSlidingWindowCounter creates a new SlidingWindowCounter.
-// limit: maximum requests allowed in the window.
-// windowSize: duration of the window (e.g., 1 minute).
-func NewSlidingWindowCounter(limit int, windowSize time.Duration) *SlidingWindowCounter {
-	return &SlidingWindowCounter{
-		limit:           limit,
-		windowSize:      windowSize,
-		currWindowStart: time.Now(),
-		prevCount:       0,
-		currCount:       0,
+// SlidingWindowLimiter approximates a moving window using previous window weights.
+type SlidingWindowLimiter struct {
+	store      storage.Storage
+	limit      int
+	windowSize time.Duration
+	keyPrefix  string
+	ttl        time.Duration
+	now        func() time.Time
+}
+
+// NewSlidingWindowLimiter instantiates a limiter with the sliding window algorithm.
+func NewSlidingWindowLimiter(store storage.Storage, limit int, windowSize time.Duration, keyPrefix string) *SlidingWindowLimiter {
+	return &SlidingWindowLimiter{
+		store:      store,
+		limit:      limit,
+		windowSize: windowSize,
+		keyPrefix:  keyPrefix,
+		ttl:        2 * windowSize,
+		now:        time.Now,
 	}
 }
 
-// Allow checks if a request is allowed based on the sliding window approximation.
-func (sw *SlidingWindowCounter) Allow() bool {
-	sw.mutex.Lock()
-	defer sw.mutex.Unlock()
+// Allow applies the sliding window count per key.
+func (sw *SlidingWindowLimiter) Allow(ctx context.Context, key string) (Result, error) {
+	stateKey := sw.stateKey(key)
+	state := slidingWindowState{
+		CurrWindowStart: sw.now(),
+	}
 
-	now := time.Now()
+	loaded, err := loadState(ctx, sw.store, stateKey, &state)
+	if err != nil {
+		return Result{}, err
+	}
+	if !loaded {
+		state.CurrWindowStart = sw.now()
+	}
 
-	// Check if we need to move the window
-	if now.Sub(sw.currWindowStart) >= sw.windowSize {
-		// Calculate how many windows have passed
-		elapsed := now.Sub(sw.currWindowStart)
-		windowsPassed := int64(elapsed / sw.windowSize)
-
+	now := sw.now()
+	if diff := now.Sub(state.CurrWindowStart); diff >= sw.windowSize {
+		windowsPassed := int(diff / sw.windowSize)
 		if windowsPassed == 1 {
-			// Just moved to the next window
-			sw.prevCount = sw.currCount
-			sw.currCount = 0
-			sw.currWindowStart = sw.currWindowStart.Add(sw.windowSize)
+			state.PrevCount = state.CurrCount
 		} else {
-			// Multiple windows passed, reset everything
-			sw.prevCount = 0
-			sw.currCount = 0
-			sw.currWindowStart = now
+			state.PrevCount = 0
+		}
+		state.CurrCount = 0
+		state.CurrWindowStart = state.CurrWindowStart.Add(time.Duration(windowsPassed) * sw.windowSize)
+		if state.CurrWindowStart.Before(now.Add(-sw.windowSize)) || state.CurrWindowStart.After(now) {
+			state.CurrWindowStart = now
 		}
 	}
 
-	// Calculate weighted count
-	timeIntoWindow := now.Sub(sw.currWindowStart).Seconds()
+	timeIntoWindow := now.Sub(state.CurrWindowStart).Seconds()
 	windowSeconds := sw.windowSize.Seconds()
 	weight := (windowSeconds - timeIntoWindow) / windowSeconds
-
-	// Ensure weight is not negative (clock skew protection)
 	if weight < 0 {
 		weight = 0
 	}
 
-	estimatedCount := int(float64(sw.prevCount)*weight) + sw.currCount
+	estimatedCount := int(math.Round(float64(state.PrevCount)*weight)) + state.CurrCount
 
-	if estimatedCount < sw.limit {
-		sw.currCount++
-		return true
+	result := Result{
+		Limit:     sw.limit,
+		Remaining: int(math.Max(0, float64(sw.limit-estimatedCount))),
 	}
 
-	return false
+	if estimatedCount < sw.limit {
+		state.CurrCount++
+		result.Allowed = true
+		result.Remaining = int(math.Max(0, float64(sw.limit-(estimatedCount+1))))
+	} else {
+		result.Allowed = false
+		result.RetryAfter = sw.windowSize - time.Duration(timeIntoWindow)
+		if result.RetryAfter < 0 {
+			result.RetryAfter = sw.windowSize
+		}
+		result.ResetAfter = result.RetryAfter
+	}
+
+	if err := saveState(ctx, sw.store, stateKey, &state, sw.ttl); err != nil {
+		return Result{}, err
+	}
+
+	return result, nil
+}
+
+func (sw *SlidingWindowLimiter) stateKey(key string) string {
+	if sw.keyPrefix == "" {
+		return key
+	}
+	return sw.keyPrefix + ":" + key
 }

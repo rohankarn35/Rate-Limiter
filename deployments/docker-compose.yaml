@@ -1,0 +1,22 @@
+version: "3.9"
+
+services:
+  redis:
+    image: redis:7
+    container_name: rate-limiter-redis
+    ports:
+      - "6379:6379"
+
+  limiter:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile
+    environment:
+      - CONFIG_PATH=/config/config.yaml
+    volumes:
+      - ../config/config.yaml:/config/config.yaml:ro
+    depends_on:
+      - redis
+    ports:
+      - "8080:8080"
+      - "9093:9093"

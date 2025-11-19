@@ -1,7 +1,21 @@
 package limiter
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
+// AlgorithmType enumerates the supported limiter algorithms.
+type AlgorithmType string
+
+const (
+	AlgorithmTokenBucket   AlgorithmType = "token_bucket"
+	AlgorithmLeakyBucket   AlgorithmType = "leaky_bucket"
+	AlgorithmSlidingWindow AlgorithmType = "sliding_window"
+	defaultStateTTL                      = 5 * time.Minute
+)
+
+// Result captures the outcome of a limiter check.
 type Result struct {
 	Allowed    bool
 	Remaining  int
@@ -10,6 +24,7 @@ type Result struct {
 	ResetAfter time.Duration
 }
 
+// Limiter is implemented by algorithm instances that can rate limit based on a key.
 type Limiter interface {
-	Allow(key string) Result
+	Allow(ctx context.Context, key string) (Result, error)
 }
