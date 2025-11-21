@@ -123,4 +123,4 @@ Apache License 2.0 – see `LICENSE`.
 
 ## 👨‍💻 Author
 
-**Rohan Karn** — Backend & Go Developer
+**Rohan Karn** — Software Developer Engineer
