@@ -10,7 +10,7 @@ metrics:
   path: /metrics
 
 storage:
-  driver: memory
+  driver: memory          # switch to "redis" for distributed setups
   redis:
     address: "redis:6379"
     username: ""
@@ -18,7 +18,8 @@ storage:
     db: 0
 
 policies:
-  - name: public-ip
+  # 1. Token Bucket – bursty public endpoints (your original)
+  - name: public-ip-token-bucket
     routes:
       - /api/v1/*
     methods: ["GET", "POST"]
@@ -26,11 +27,13 @@ policies:
       type: ip
     algorithm:
       type: token_bucket
-      limit: 30
-      burst: 30
-      refill_rate: 5
+      limit: 30          # total tokens
+      burst: 30          # initial burst size
+      refill_rate: 5     # 5 tokens per interval
       interval: 1s
-  - name: api-key-tier
+
+  # 2. Sliding Window – strict per-minute limits for premium users
+  - name: premium-api-key-sliding-window
     routes:
       - /api/v1/premium/*
     methods: ["GET", "POST"]
@@ -40,5 +43,31 @@ policies:
       fallback: ip
     algorithm:
       type: sliding_window
-      limit: 100
-      window: 1m
+      limit: 100         # max 100 requests
+      window: 1m         # per rolling 1-minute window
+
+  # 3. Leaky Bucket – smooth, constant-rate traffic (e.g. uploads, webhooks, streaming)
+  - name: upload-stream-leaky-bucket
+    routes:
+      - /api/v1/upload
+      - /api/v1/stream/*
+      - /api/v1/webhook
+    methods: ["POST"]
+    identity:
+      type: ip
+    algorithm:
+      type: leaky_bucket
+      rate: 20           # exactly 20 requests per second (steady drain)
+      burst: 50          # max queue size before 429
+
+ 
+  - name: global-fallback-leaky
+    routes:
+      - "/*"             # catch-all for anything not matched above
+    methods: ["*"]
+    identity:
+      type: ip
+    algorithm:
+      type: leaky_bucket
+      rate: 10
+      burst: 20
